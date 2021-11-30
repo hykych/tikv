@@ -37,6 +37,17 @@ impl ReadIndexRequest {
         self.cmds.push((req, cb, Some(read_index)));
     }
 
+    pub fn noop(id: Uuid, renew_lease_time: Timespec) -> Self {
+        RAFT_READ_INDEX_PENDING_COUNT.inc();
+        ReadIndexRequest {
+            id,
+            cmds: MustConsumeVec::new("noop"),
+            renew_lease_time,
+            read_index: None,
+            in_contexts: false,
+        }
+    }
+
     pub fn with_command(
         id: Uuid,
         req: RaftCmdRequest,

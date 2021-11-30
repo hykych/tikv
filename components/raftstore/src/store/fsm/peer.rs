@@ -1036,7 +1036,8 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 }
                 Some(t) => t
             };
-            let next_tick = current_time + Duration::from_millis(self.ctx.cfg.raft_base_tick_interval.as_millis());
+            // TODO... check if this value_of_u64 as i64 work as expected.
+            let next_tick = current_time + Duration::milliseconds(self.ctx.cfg.raft_base_tick_interval.as_millis() as i64);
             //We need to propose a read index request if current lease can't cover till next tick.
             let need_propose = match self.fsm.peer.leader_lease.inspect(Some(next_tick)) {
                 LeaseState::Expired => {
