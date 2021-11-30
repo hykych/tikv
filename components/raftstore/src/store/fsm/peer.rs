@@ -7,6 +7,7 @@ use std::iter::Iterator;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
+use time::Duration;
 use std::{cmp, u64};
 
 use batch_system::{BasicMailbox, Fsm};
@@ -33,7 +34,7 @@ use raft::eraftpb::{ConfChangeType, MessageType};
 use raft::{self, SnapshotStatus, INVALID_INDEX, NO_LIMIT};
 use raft::{Ready, StateRole};
 use tikv_util::mpsc::{self, LooseBoundedSender, Receiver};
-use tikv_util::time::duration_to_sec;
+use tikv_util::time::{duration_to_sec, monotonic_raw_now};
 use tikv_util::worker::{Scheduler, Stopped};
 use tikv_util::{escape, is_zero_duration, Either};
 use txn_types::TxnExtra;
@@ -51,7 +52,7 @@ use crate::store::msg::{Callback, ExtCallback};
 use crate::store::peer::{ConsistencyState, Peer, StaleState};
 use crate::store::peer_storage::{ApplySnapResult, InvokeContext};
 use crate::store::transport::Transport;
-use crate::store::util::KeysInfoFormatter;
+use crate::store::util::{KeysInfoFormatter, LeaseState};
 use crate::store::worker::{
     CleanupSSTTask, CleanupTask, ConsistencyCheckTask, RaftlogGcTask, ReadDelegate, RegionTask,
     SplitCheckTask,
@@ -63,6 +64,7 @@ use crate::store::{
 };
 use crate::{Error, Result};
 use keys::{self, enc_end_key, enc_start_key};
+use crate::store::read_queue::ReadIndexRequest;
 
 pub struct DestroyPeerJob {
     pub initialized: bool,
@@ -1026,6 +1028,35 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
         // to allow it to campaign quickly when abnormal situation is detected.
         if !self.fsm.peer.is_leader() {
             self.register_raft_base_tick();
+        } else {
+            let current_time = match self.ctx.current_time {
+                None => {
+                    self.ctx.current_time = Some(monotonic_raw_now());
+                    self.ctx.current_time.unwrap()
+                }
+                Some(t) => t
+            };
+            let next_tick = current_time + Duration::from_millis(self.ctx.cfg.raft_base_tick_interval.as_millis());
+            //We need to propose a read index request if current lease can't cover till next tick.
+            let need_propose = match self.fsm.peer.leader_lease.inspect(Some(next_tick)) {
+                LeaseState::Expired => {
+                    let max_lease = self.ctx.cfg.raft_store_max_leader_lease();
+                    self.fsm.peer.pending_reads.reads.back().map_or(true, |read| {
+                        //If there are read index whose lease can cover till next tick
+                        //then we don't need to propose a new one
+                        read.renew_lease_time + max_lease < next_tick
+                    })
+                }
+                _ => false
+            };
+
+            if need_propose {
+                let (id,dropped) = self.fsm.peer.propose_read_index();
+                if !dropped {
+                    let read_proposal = ReadIndexRequest::noop(id, current_time);
+                    self.fsm.peer.pending_reads.push_back(read_proposal, true);
+                }
+            }
         }
     }
 

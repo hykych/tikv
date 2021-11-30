@@ -67,7 +67,7 @@ impl Drop for ReadIndexRequest {
 
 #[derive(Default)]
 pub struct ReadIndexQueue {
-    reads: VecDeque<ReadIndexRequest>,
+    pub(crate) reads: VecDeque<ReadIndexRequest>,
     ready_cnt: usize,
     // How many requests are handled.
     handled_cnt: usize,

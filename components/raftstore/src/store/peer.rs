@@ -329,8 +329,8 @@ pub struct Peer {
     apply_proposals: Vec<Proposal>,
 
     leader_missing_time: Option<Instant>,
-    leader_lease: Lease,
-    pending_reads: ReadIndexQueue,
+    pub(crate) leader_lease: Lease,
+    pub(crate) pending_reads: ReadIndexQueue,
 
     /// If it fails to send messages to leader.
     pub leader_unreachable: bool,
@@ -2330,23 +2330,11 @@ impl Peer {
             return false;
         }
 
-        // Should we call pre_propose here?
-        let last_pending_read_count = self.raft_group.raft.pending_read_count();
-        let last_ready_read_count = self.raft_group.raft.ready_read_count();
-
         poll_ctx.raft_metrics.propose.read_index += 1;
 
         self.bcast_wake_up_time = None;
-        let id = Uuid::new_v4();
-        self.raft_group.read_index(id.as_bytes().to_vec());
-
-        let pending_read_count = self.raft_group.raft.pending_read_count();
-        let ready_read_count = self.raft_group.raft.ready_read_count();
-
-        if pending_read_count == last_pending_read_count
-            && ready_read_count == last_ready_read_count
-            && self.is_leader()
-        {
+        let (id, dropped) = self.propose_read_index();
+        if dropped && self.is_leader() {
             // The message gets dropped silently, can't be handled anymore.
             apply::notify_stale_req(self.term(), cb);
             return false;
@@ -2380,6 +2368,24 @@ impl Peer {
         }
 
         true
+    }
+
+    // Propose a read index request to the raft group, return the request id and
+    // whether this request had dropped silently
+    pub fn propose_read_index(&mut self) -> (Uuid, bool) {
+        let last_pending_read_count = self.raft_group.raft.pending_read_count();
+        let last_ready_read_count = self.raft_group.raft.ready_read_count();
+
+        let id = Uuid::new_v4();
+        self.raft_group.read_index(id.as_bytes().to_vec());
+
+        let pending_read_count = self.raft_group.raft.pending_read_count();
+        let ready_read_count = self.raft_group.raft.ready_read_count();
+        (
+            id,
+            pending_read_count == last_pending_read_count
+                && ready_read_count == last_ready_read_count,
+        )
     }
 
     // For now, it is only used in merge.
