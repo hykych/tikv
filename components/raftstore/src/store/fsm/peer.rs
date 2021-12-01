@@ -1011,24 +1011,7 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
 
         self.fsm.peer.mut_store().flush_cache_metrics();
 
-        // Keep ticking if there are still pending read requests or this node is within hibernate timeout.
-        if res.is_none() /* hibernate_region is false */ ||
-        !self.fsm.peer.check_after_tick(self.fsm.group_state, res.unwrap()) ||
-        (self.fsm.peer.is_leader() && !self.ctx.is_hibernate_timeout())
-        {
-            self.register_raft_base_tick();
-            // We need pd heartbeat tick to collect down peers and pending peers.
-            self.register_pd_heartbeat_tick();
-            return;
-        }
-
-        debug!("stop ticking"; "region_id" => self.region_id(), "peer_id" => self.fsm.peer_id(), "res" => ?res);
-        self.fsm.group_state = GroupState::Idle;
-        // Followers will stop ticking at L789. Keep ticking for followers
-        // to allow it to campaign quickly when abnormal situation is detected.
-        if !self.fsm.peer.is_leader() {
-            self.register_raft_base_tick();
-        } else {
+        if self.fsm.peer.is_leader() {
             let current_time = match self.ctx.current_time {
                 None => {
                     self.ctx.current_time = Some(monotonic_raw_now());
@@ -1056,8 +1039,28 @@ impl<'a, T: Transport, C: PdClient> PeerFsmDelegate<'a, T, C> {
                 if !dropped {
                     let read_proposal = ReadIndexRequest::noop(id, current_time);
                     self.fsm.peer.pending_reads.push_back(read_proposal, true);
+                    debug!("proposed a ReadIndexRequest::noop to renew release"; "region_id" => self.region_id());
                 }
             }
+        }
+
+        // Keep ticking if there are still pending read requests or this node is within hibernate timeout.
+        if res.is_none() /* hibernate_region is false */ ||
+        !self.fsm.peer.check_after_tick(self.fsm.group_state, res.unwrap()) ||
+        (self.fsm.peer.is_leader() && !self.ctx.is_hibernate_timeout())
+        {
+            self.register_raft_base_tick();
+            // We need pd heartbeat tick to collect down peers and pending peers.
+            self.register_pd_heartbeat_tick();
+            return;
+        }
+
+        debug!("stop ticking"; "region_id" => self.region_id(), "peer_id" => self.fsm.peer_id(), "res" => ?res);
+        self.fsm.group_state = GroupState::Idle;
+        // Followers will stop ticking at L789. Keep ticking for followers
+        // to allow it to campaign quickly when abnormal situation is detected.
+        if !self.fsm.peer.is_leader() {
+            self.register_raft_base_tick();
         }
     }
 
